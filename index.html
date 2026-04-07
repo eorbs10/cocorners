@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebGL 다중 웨이브 (버그 수정판)</title>
+    <title>WebGL 다중 웨이브 (생성 위치 수정판)</title>
     <style>
         body { 
             margin: 0; 
@@ -107,9 +106,9 @@
         dirLight.position.set(5, 10, 5);
         scene.add(dirLight);
 
-        // 2. 7x12 체스판(여유공간 +1 포함) 구성
-        const cols = 5;  
-        const rows = 10; 
+        // 2. 5x10 체스판 (여유공간 +1 포함) 구성
+        const cols = 5;  // 가로 (X축)
+        const rows = 10; // 세로 (Z축)
         const tiles = {}; 
         const tileGroup = new THREE.Group();
         scene.add(tileGroup);
@@ -121,10 +120,10 @@
         const offsetX = (cols - 1) / 2;
         const offsetZ = (rows - 1) / 2;
 
+        // 타일 생성 루프 (X: -1~5, Z: -1~10)
         for (let z = -1; z <= rows; z++) {
             for (let x = -1; x <= cols; x++) {
                 const isInner = (x >= 0 && x < cols && z >= 0 && z < rows);
-                
                 const mat = new THREE.MeshStandardMaterial({ 
                     color: isInner ? 0xffffff : 0x1a1a1a 
                 });
@@ -136,7 +135,7 @@
                     tile.add(edges);
                 }
 
-                tile.userData = { gridX: x, gridZ: z, isInner: isInner, isDeadly: false, isSafe: false, isIntersectionSafe: false };
+                tile.userData = { gridX: x, gridZ: z, isInner: isInner };
                 tileGroup.add(tile);
                 tiles[`${x},${z}`] = tile;
             }
@@ -153,7 +152,7 @@
         let spawnTimer = 0;
         let waves = []; 
 
-        // 4. 입력 처리
+        // 4. 입력 처리 (Hold & Drag)
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
 
@@ -185,7 +184,6 @@
 
         window.addEventListener('pointerdown', (e) => {
             if (e.target.tagName === 'BUTTON' || gameOver) return;
-            
             const tile = getIntersectedTile(e);
             if (tile && tile.userData.isInner && !isPlaying) {
                 isPlaying = true;
@@ -198,13 +196,9 @@
             }
         });
 
-        window.addEventListener('pointermove', (e) => {
-            if (isPlaying) updatePlayerPos(e);
-        });
-
+        window.addEventListener('pointermove', (e) => { if (isPlaying) updatePlayerPos(e); });
         window.addEventListener('pointerup', () => triggerGameOver("마우스를 떼서 게임 오버!"));
         window.addEventListener('pointerleave', () => triggerGameOver("화면을 벗어나 게임 오버!"));
-        window.addEventListener('blur', () => triggerGameOver("다른 창으로 이동하여 게임 오버!"));
 
         document.getElementById('resetBtn').addEventListener('click', () => {
             playerPos = { x: -99, z: -99 };
@@ -214,26 +208,27 @@
             spawnTimer = 0;
             gameOver = false;
             isPlaying = false;
-            
             document.getElementById('score').innerText = score;
             document.getElementById('gameover-container').style.display = 'none';
             document.getElementById('startMsg').style.display = 'block';
         });
 
-        // 5. 웨이브 스폰
+        // 5. 웨이브 생성 로직 (무조건 바깥에서 생성)
         function spawnWave(type) {
             let dir, axisVal, dx = 0, dz = 0, safeIndex;
             
-            if (type === 'vertical') { 
+            if (type === 'vertical') { // 상 하 이동 웨이브 (Z축 방향 이동)
                 dir = Math.random() < 0.5 ? 'top' : 'bottom';
-                if (dir === 'top') { axisVal = -1; dz = 1; } 
-                else { axisVal = rows; dz = -1; }
-                safeIndex = Math.floor(Math.random() * cols);
-            } else { 
+                // 💡 상단(-1) 혹은 하단(rows=10)의 "여유 공간"에서 시작
+                axisVal = (dir === 'top') ? -1 : rows; 
+                dz = (dir === 'top') ? 1 : -1;
+                safeIndex = Math.floor(Math.random() * cols); // 가로(X) 중 한 곳이 안전
+            } else { // 좌 우 이동 웨이브 (X축 방향 이동)
                 dir = Math.random() < 0.5 ? 'left' : 'right';
-                if (dir === 'left') { axisVal = -1; dx = 1; } 
-                else { axisVal = cols; dx = -1; }
-                safeIndex = Math.floor(Math.random() * rows);
+                // 💡 좌측(-1) 혹은 우측(cols=5)의 "여유 공간"에서 시작
+                axisVal = (dir === 'left') ? -1 : cols;
+                dx = (dir === 'left') ? 1 : -1;
+                safeIndex = Math.floor(Math.random() * rows); // 세로(Z) 중 한 곳이 안전
             }
 
             waves.push({
@@ -245,14 +240,14 @@
         function spawnWaveIfNeeded() {
             let vCount = waves.filter(w => w.type === 'vertical').length;
             let hCount = waves.filter(w => w.type === 'horizontal').length;
-
             if (vCount < 2 && Math.random() < 0.7) spawnWave('vertical');
             if (hCount < 1 && Math.random() < 0.5) spawnWave('horizontal');
             if (vCount === 0 && hCount === 0) spawnWave('vertical');
         }
 
-        // 6. 상태 계산 로직 (버그 수정 완료)
+        // 6. 그리드 상태 계산 및 교차점 안전지대 로직
         function updateGridState() {
+            // 모든 타일 초기화
             for (let z = -1; z <= rows; z++) {
                 for (let x = -1; x <= cols; x++) {
                     const t = tiles[`${x},${z}`];
@@ -262,16 +257,15 @@
                 }
             }
 
-            let vWaves = [];
-            let hWaves = [];
+            let vWaves = []; // 상하 이동 중인 웨이브들
+            let hWaves = []; // 좌우 이동 중인 웨이브들
 
-            // 웨이브 라인 긋기 (X축, Z축 반전 버그 수정!)
             for (let w of waves) {
                 if (w.state === 'idle' || !w.isVisible) continue;
                 
                 if (w.type === 'vertical') {
                     vWaves.push(w);
-                    // 세로 웨이브는 X를 순회하고 Z값(w.axisVal)을 고정시켜 그립니다.
+                    // Z축 값이 w.axisVal인 가로 줄 전체 색칠
                     for (let x = -1; x <= cols; x++) {
                         let t = tiles[`${x},${w.axisVal}`];
                         if (t) {
@@ -281,7 +275,7 @@
                     }
                 } else {
                     hWaves.push(w);
-                    // 가로 웨이브는 Z를 순회하고 X값(w.axisVal)을 고정시켜 그립니다.
+                    // X축 값이 w.axisVal인 세로 줄 전체 색칠
                     for (let z = -1; z <= rows; z++) {
                         let t = tiles[`${w.axisVal},${z}`];
                         if (t) {
@@ -292,19 +286,18 @@
                 }
             }
 
-            // 교차점(십자가 형태 5칸) 초록색 보너스 지역 생성
+            // 💡 십자 교차점 보너스 안전지대 로직
             for (let vw of vWaves) {
                 for (let hw of hWaves) {
-                    // 가로선과 세로선이 만나는 정확한 X, Z 좌표
+                    // vw는 Z 좌표를 가지고 있고, hw는 X 좌표를 가지고 있음
                     let ix = hw.axisVal;
                     let iz = vw.axisVal;
 
+                    // 교차점(0,0) 및 상하좌우 1칸씩 오프셋
                     let offsets = [[0,0], [-1,0], [1,0], [0,-1], [0,1]];
                     for (let off of offsets) {
                         let t = tiles[`${ix + off[0]},${iz + off[1]}`];
-                        if (t) {
-                            t.userData.isIntersectionSafe = true;
-                        }
+                        if (t) t.userData.isIntersectionSafe = true;
                     }
                 }
             }
@@ -314,6 +307,7 @@
             if (!isPlaying || gameOver) return;
             const pTile = tiles[`${playerPos.x},${playerPos.z}`];
             if (pTile) {
+                // 공격 판정이 있는 타일인데, 기본 안전지대도 아니고 십자 교차 보너스 존도 아니라면 사망
                 if (pTile.userData.isDeadly && !pTile.userData.isSafe && !pTile.userData.isIntersectionSafe) {
                     triggerGameOver("웨이브에 휩쓸렸습니다!");
                 }
@@ -327,19 +321,15 @@
                     
                     if (t.userData.isIntersectionSafe && t.userData.isDeadly) {
                         t.material.color.setHex(0x00ff00); // 십자 보너스 구역
-                    } 
-                    else if (t.userData.isSafe) {
+                    } else if (t.userData.isSafe) {
                         t.material.color.setHex(0x00ff00); // 기본 안전지대
-                    } 
-                    else if (t.userData.isDeadly) {
+                    } else if (t.userData.isDeadly) {
                         t.material.color.setHex(0x800080); // 보라색 웨이브
-                    } 
-                    else {
-                        t.material.color.setHex(t.userData.isInner ? 0xffffff : 0x1a1a1a); // 기본 바닥
+                    } else {
+                        t.material.color.setHex(t.userData.isInner ? 0xffffff : 0x1a1a1a);
                     }
                 }
             }
-
             if (isPlaying && playerPos.x !== -99) {
                 const pTile = tiles[`${playerPos.x},${playerPos.z}`];
                 if (pTile) pTile.material.color.setHex(0x00aa00);
@@ -370,7 +360,6 @@
                             w.isVisible = !w.isVisible;
                             w.blinkCount++;
                             w.timer = 0;
-
                             if (w.blinkCount >= 6) { 
                                 w.state = 'move';
                                 w.isVisible = true;
@@ -381,8 +370,10 @@
                     else if (w.state === 'move') {
                         if (w.timer > waveSpeed) {
                             w.timer = 0;
-                            w.axisVal += (w.dir === 'top' || w.dir === 'bottom') ? w.dz : w.dx;
+                            // 상하/좌우 방향에 맞춰 좌표 전진
+                            w.axisVal += (w.type === 'vertical') ? w.dz : w.dx;
 
+                            // 화면 밖으로 완전히 나갔는지 판정
                             let isOut = false;
                             if (w.dir === 'top' && w.axisVal > rows) isOut = true;
                             if (w.dir === 'bottom' && w.axisVal < -1) isOut = true;
@@ -421,4 +412,3 @@
     </script>
 </body>
 </html>
-
