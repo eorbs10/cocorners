@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebGL 하드코어 웨이브 게임 (독립 규칙 적용)</title>
+    <title>WebGL 다중 웨이브 (교차점 안전지대)</title>
     <style>
         body { 
             margin: 0; 
@@ -106,7 +106,7 @@
         dirLight.position.set(5, 10, 5);
         scene.add(dirLight);
 
-        // 2. 7x12 체스판 구성
+        // 2. 7x12 체스판(여유공간 +1 포함) 구성 로직
         const cols = 5;  
         const rows = 10; 
         const tiles = {}; 
@@ -135,13 +135,13 @@
                     tile.add(edges);
                 }
 
-                tile.userData = { gridX: x, gridZ: z, isInner: isInner, isSafe: false, isDeadly: false };
+                tile.userData = { gridX: x, gridZ: z, isInner: isInner, isDeadly: false, isSafe: false, isIntersectionSafe: false };
                 tileGroup.add(tile);
                 tiles[`${x},${z}`] = tile;
             }
         }
 
-        // 3. 게임 변수
+        // 3. 게임 변수 (다중 웨이브 모드 롤백)
         let isPlaying = false;
         let gameOver = false;
         let playerPos = { x: -99, z: -99 };
@@ -152,7 +152,7 @@
         let spawnTimer = 0;
         let waves = []; 
 
-        // 4. 입력 처리
+        // 4. 입력 처리 (Hold & Drag)
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
 
@@ -170,7 +170,6 @@
             if (tile && tile.userData.isInner) {
                 playerPos.x = tile.userData.gridX;
                 playerPos.z = tile.userData.gridZ;
-                checkAllCollisions(); 
             }
         }
 
@@ -218,10 +217,9 @@
             document.getElementById('score').innerText = score;
             document.getElementById('gameover-container').style.display = 'none';
             document.getElementById('startMsg').style.display = 'block';
-            updateColors();
         });
 
-        // 5. 웨이브 및 충돌 로직
+        // 5. 다중 웨이브 관리 로직
         function spawnWave(type) {
             let dir, axisVal, dx = 0, dz = 0, safeIndex;
             
@@ -252,96 +250,107 @@
             if (vCount === 0 && hCount === 0) spawnWave('vertical');
         }
 
-        function checkAllCollisions() {
-            if (!isPlaying || gameOver) return;
-            
-            let isDeadlyHit = false;
-            let isSafeHit = false; // 안전지대 밟음 여부
-
-            for (let w of waves) {
-                if (w.state !== 'move') continue;
-                
-                let isOnThisWave = false;
-                let isSafeOnThisWave = false;
-
-                if (w.type === 'vertical') {
-                    if (playerPos.z === w.axisVal) {
-                        isOnThisWave = true;
-                        if (playerPos.x === w.safeIndex) isSafeOnThisWave = true;
-                    }
-                } else {
-                    if (playerPos.x === w.axisVal) {
-                        isOnThisWave = true;
-                        if (playerPos.z === w.safeIndex) isSafeOnThisWave = true;
-                    }
-                }
-
-                if (isOnThisWave) {
-                    if (isSafeOnThisWave) {
-                        isSafeHit = true; // 현재 서 있는 곳이 어떤 웨이브의 안전지대라면 생존 플래그 획득
-                    } else {
-                        isDeadlyHit = true; // 공격 타일 위
-                    }
-                }
-            }
-
-            // 💡 독립 규칙 적용: 치명타를 맞았더라도, 하나의 안전지대(초록색)라도 밟고 있다면 무적!
-            if (isDeadlyHit && !isSafeHit) {
-                triggerGameOver("웨이브에 휩쓸렸습니다!");
-            }
-        }
-
-        // 6. 렌더링 루프
-        function updateColors() {
+        // 6. 상태 갱신 (핵심: 교차점 확장 로직)
+        function updateGridState() {
+            // 1) 모든 타일 초기화
             for (let z = -1; z <= rows; z++) {
                 for (let x = -1; x <= cols; x++) {
-                    const tile = tiles[`${x},${z}`];
-                    tile.userData.isDeadly = false;
-                    tile.userData.isSafe = false;
-                    tile.material.color.setHex(tile.userData.isInner ? 0xffffff : 0x1a1a1a);
+                    const t = tiles[`${x},${z}`];
+                    t.userData.isDeadly = false;
+                    t.userData.isSafe = false;
+                    t.userData.isIntersectionSafe = false;
                 }
             }
 
+            let vWaves = [];
+            let hWaves = [];
+
+            // 2) 개별 웨이브의 공격/기본 안전지대 마킹
             for (let w of waves) {
                 if (w.state === 'idle' || !w.isVisible) continue;
                 
                 if (w.type === 'vertical') {
-                    for (let x = -1; x <= cols; x++) {
-                        const t = tiles[`${x},${w.axisVal}`];
+                    vWaves.push(w);
+                    for (let z = -1; z <= rows; z++) {
+                        let t = tiles[`${w.axisVal},${z}`];
                         if (t) {
-                            if (x === w.safeIndex) t.userData.isSafe = true;
-                            else t.userData.isDeadly = true;
+                            t.userData.isDeadly = true;
+                            if (z === w.safeIndex) t.userData.isSafe = true;
                         }
                     }
                 } else {
-                    for (let z = -1; z <= rows; z++) {
-                        const t = tiles[`${w.axisVal},${z}`];
+                    hWaves.push(w);
+                    for (let x = -1; x <= cols; x++) {
+                        let t = tiles[`${x},${w.axisVal}`];
                         if (t) {
-                            if (z === w.safeIndex) t.userData.isSafe = true;
-                            else t.userData.isDeadly = true;
+                            t.userData.isDeadly = true;
+                            if (x === w.safeIndex) t.userData.isSafe = true;
                         }
                     }
                 }
             }
 
+            // 3) 새로운 규칙: 교차점 + 십자 영역 안전지대 덮어쓰기
+            for (let vw of vWaves) {
+                for (let hw of hWaves) {
+                    let ix = vw.axisVal;
+                    let iz = hw.axisVal;
+
+                    // 교차점(0,0)과 상, 하, 좌, 우 1칸씩 오프셋 적용
+                    let offsets = [[0,0], [-1,0], [1,0], [0,-1], [0,1]];
+                    for (let off of offsets) {
+                        let t = tiles[`${ix + off[0]},${iz + off[1]}`];
+                        if (t) {
+                            t.userData.isIntersectionSafe = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        function checkCollision() {
+            if (!isPlaying || gameOver) return;
+            const pTile = tiles[`${playerPos.x},${playerPos.z}`];
+            if (pTile) {
+                // 공격 타일인데 기본 안전지대도 아니고, 교차점 십자 보너스 존도 아니면 데스
+                if (pTile.userData.isDeadly && !pTile.userData.isSafe && !pTile.userData.isIntersectionSafe) {
+                    triggerGameOver("웨이브에 휩쓸렸습니다!");
+                }
+            }
+        }
+
+        function updateColors() {
             for (let z = -1; z <= rows; z++) {
                 for (let x = -1; x <= cols; x++) {
                     const t = tiles[`${x},${z}`];
-                    // 💡 시각적 독립 규칙 적용: 안전지대(초록)가 교차점의 보라색을 뚫고 무조건 우선 표시됨
-                    if (t.userData.isSafe) {
+                    
+                    // 우선순위 1: 교차점 십자 보너스 구역 (보라색 위를 덮어씀)
+                    if (t.userData.isIntersectionSafe && t.userData.isDeadly) {
                         t.material.color.setHex(0x00ff00);
-                    } else if (t.userData.isDeadly) {
+                    } 
+                    // 우선순위 2: 기본 안전지대
+                    else if (t.userData.isSafe) {
+                        t.material.color.setHex(0x00ff00);
+                    } 
+                    // 우선순위 3: 웨이브
+                    else if (t.userData.isDeadly) {
                         t.material.color.setHex(0x800080);
+                    } 
+                    // 나머지: 일반 바닥
+                    else {
+                        t.material.color.setHex(t.userData.isInner ? 0xffffff : 0x1a1a1a);
                     }
                 }
             }
 
+            // 플레이어 그리기 (최우선)
             if (isPlaying && playerPos.x !== -99) {
                 const pTile = tiles[`${playerPos.x},${playerPos.z}`];
                 if (pTile) pTile.material.color.setHex(0x00aa00);
             }
         }
 
+        // 7. 애니메이션 루프
         function animate() {
             requestAnimationFrame(animate);
 
@@ -394,10 +403,12 @@
                     }
                 }
                 
-                checkAllCollisions();
+                // 로직 순서: 1.상태계산 -> 2.충돌판정 -> 3.렌더링
+                updateGridState();
+                checkCollision();
                 updateColors();
             } else if (gameOver) {
-                updateColors();
+                updateColors(); // 사망 당시 화면 고정
             }
 
             renderer.render(scene, camera);
@@ -409,6 +420,7 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
+        updateGridState();
         updateColors();
         animate();
     </script>
